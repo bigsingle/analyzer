@@ -2,27 +2,32 @@
 <html lang="ja">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Physics Resonance Analyzer</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+    <title>Resonance Analyzer - Swipe Edition</title>
     <style>
-        :root { --main-bg: #1a1a1a; --accent: #00ffcc; --peak-color: #ff4444; }
-        body { background: var(--main-bg); color: #fff; font-family: 'Segoe UI', sans-serif; margin: 0; display: flex; flex-direction: column; align-items: center; }
-        .header { margin: 15px; text-align: center; }
-        canvas { width: 95vw; height: 50vh; background: #000; border: 2px solid #333; border-radius: 8px; }
-        .controls { width: 90%; background: #2a2a2a; padding: 20px; border-radius: 12px; margin-top: 15px; display: grid; grid-template-columns: 1fr 2fr; gap: 20px; align-items: center; }
-        button { padding: 15px; font-size: 1.2rem; font-weight: bold; background: var(--accent); border: none; border-radius: 8px; cursor: pointer; color: #000; }
-        button.active { background: #ff5555; color: #fff; }
-        .slider-box { display: flex; flex-direction: column; gap: 10px; }
-        input[type=range] { width: 100%; cursor: pointer; }
-        .label-text { font-size: 0.9rem; color: #ccc; }
-        #debugInfo { color: #f0ad4e; font-size: 0.8rem; margin-top: 5px; }
+        :root { --accent: #00ffcc; }
+        body { background: #1a1a1a; color: #fff; font-family: sans-serif; margin: 0; display: flex; flex-direction: column; align-items: center; overflow: hidden; touch-action: none; }
+        .header { margin: 10px; text-align: center; }
+        #freqRangeLabel { color: var(--accent); font-weight: bold; font-size: 1.2rem; }
+        
+        canvas { 
+            width: 95vw; height: 50vh; background: #000; 
+            border: 2px solid #333; border-radius: 8px; cursor: grab;
+            touch-action: none; /* ブラウザのデフォルトスワイプを無効化 */
+        }
+        canvas:active { cursor: grabbing; }
+
+        .controls { width: 90%; background: #2a2a2a; padding: 15px; border-radius: 12px; margin-top: 10px; display: grid; grid-template-columns: 1fr 2fr; gap: 15px; align-items: center; }
+        button { padding: 15px; font-size: 1rem; font-weight: bold; background: var(--accent); border: none; border-radius: 8px; }
+        .slider-box { display: flex; flex-direction: column; gap: 5px; }
+        .help-text { font-size: 0.8rem; color: #aaa; text-align: center; margin-top: 5px; }
     </style>
 </head>
 <body>
 
     <div class="header">
-        <h2 style="margin:0; color:var(--accent);">気柱共鳴実験用アナライザー</h2>
-        <div id="debugInfo">Startを押してマイクを許可してください</div>
+        <div id="freqRangeLabel">0 Hz - 5000 Hz</div>
+        <div class="help-text">グラフを左右にスワイプして移動</div>
     </div>
 
     <canvas id="visualizer"></canvas>
@@ -30,56 +35,77 @@
     <div class="controls">
         <button id="toggleBtn">計測開始</button>
         <div class="slider-box">
-            <div style="display:flex; justify-content:space-between;">
-                <span class="label-text">表示範囲 (0Hz ? <span id="maxFreqVal">8000</span>Hz)</span>
-            </div>
-            <input type="range" id="maxFreqSlider" min="500" max="20000" step="100" value="8000">
+            <span style="font-size:0.8rem;">表示幅（スパン）: <span id="spanVal">5000</span>Hz</span>
+            <input type="range" id="spanSlider" min="100" max="10000" step="100" value="5000">
         </div>
     </div>
 
 <script>
 let audioCtx, analyser, dataArray, animationId;
+let minFreq = 0; // 表示の開始周波数
+let spanFreq = 5000; // 表示する幅
+
 const canvas = document.getElementById('visualizer');
 const ctx = canvas.getContext('2d');
 const toggleBtn = document.getElementById('toggleBtn');
-const maxFreqSlider = document.getElementById('maxFreqSlider');
-const maxFreqVal = document.getElementById('maxFreqVal');
-const debugInfo = document.getElementById('debugInfo');
+const spanSlider = document.getElementById('spanSlider');
+const freqLabel = document.getElementById('freqRangeLabel');
 
-// 高解像度化
-function resizeCanvas() {
+// キャンバスサイズ設定
+function resize() {
     canvas.width = canvas.clientWidth * window.devicePixelRatio;
     canvas.height = canvas.clientHeight * window.devicePixelRatio;
 }
-window.addEventListener('resize', resizeCanvas);
-resizeCanvas();
+window.addEventListener('resize', resize);
+resize();
 
-async function startAudio() {
-    try {
-        const AudioContext = window.AudioContext || window.webkitAudioContext;
-        audioCtx = new AudioContext();
-        
-        const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-        const source = audioCtx.createMediaStreamSource(stream);
-        
-        analyser = audioCtx.createAnalyser();
-        analyser.fftSize = 8192; // 共鳴実験用に周波数分解能を極限まで高める
-        source.connect(analyser);
+// --- スワイプ（パン）機能の実装 ---
+let isDragging = false;
+let startX = 0;
+let startMinFreq = 0;
 
-        dataArray = new Uint8Array(analyser.frequencyBinCount);
-        debugInfo.innerText = "計測中...";
-        draw();
-    } catch (err) {
-        debugInfo.innerText = "エラー: " + err.message;
-    }
+canvas.addEventListener('pointerdown', (e) => {
+    isDragging = true;
+    startX = e.clientX;
+    startMinFreq = minFreq;
+});
+
+window.addEventListener('pointermove', (e) => {
+    if (!isDragging || !audioCtx) return;
+    
+    const deltaX = e.clientX - startX;
+    // 1ピクセルあたりの周波数移動量を計算
+    const freqPerPixel = spanFreq / (canvas.clientWidth);
+    minFreq = startMinFreq - (deltaX * freqPerPixel);
+
+    // 範囲制限 (0Hz以下には行かない)
+    if (minFreq < 0) minFreq = 0;
+    const maxLimit = (audioCtx.sampleRate / 2) - spanFreq;
+    if (minFreq > maxLimit) minFreq = maxLimit;
+});
+
+window.addEventListener('pointerup', () => isDragging = false);
+
+// --- 音声処理と描画 ---
+async function init() {
+    audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+    const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    const source = audioCtx.createMediaStreamSource(stream);
+    analyser = audioCtx.createAnalyser();
+    analyser.fftSize = 8192;
+    source.connect(analyser);
+    dataArray = new Uint8Array(analyser.frequencyBinCount);
+    draw();
 }
 
 function draw() {
     animationId = requestAnimationFrame(draw);
     analyser.getByteFrequencyData(dataArray);
 
-    const maxF = parseInt(maxFreqSlider.value);
-    maxFreqVal.innerText = maxF;
+    spanFreq = parseInt(spanSlider.value);
+    document.getElementById('spanVal').innerText = spanFreq;
+    const maxFreq = minFreq + spanFreq;
+    freqLabel.innerText = `${Math.round(minFreq)} Hz - ${Math.round(maxFreq)} Hz`;
 
     ctx.fillStyle = '#000';
     ctx.fillRect(0, 0, canvas.width, canvas.height);
@@ -87,77 +113,50 @@ function draw() {
     const binSize = audioCtx.sampleRate / analyser.fftSize;
     const points = [];
 
-    // グラフ描画
     ctx.beginPath();
     ctx.strokeStyle = '#00ffcc';
     ctx.lineWidth = 3;
-    ctx.lineJoin = 'round';
 
     for (let i = 0; i < dataArray.length; i++) {
-        const freq = i * binSize;
-        if (freq > maxF) break;
+        const f = i * binSize;
+        if (f < minFreq) continue;
+        if (f > maxFreq) break;
 
-        const x = (freq / maxF) * canvas.width;
+        const x = ((f - minFreq) / spanFreq) * canvas.width;
         const y = canvas.height - (dataArray[i] / 255) * canvas.height;
 
-        if (i === 0) ctx.moveTo(x, y);
+        if (points.length === 0) ctx.moveTo(x, y);
         else ctx.lineTo(x, y);
-
-        points.push({ x, y, freq, val: dataArray[i] });
+        points.push({ x, y, freq: f, val: dataArray[i] });
     }
     ctx.stroke();
 
-    // --- ピーク検出ロジック ---
-    // 1. 周辺より高い地点（ローカルマキシマム）を抽出
+    // ピーク検出（上位5つ）
     let localPeaks = [];
-    for (let i = 5; i < points.length - 5; i++) {
-        if (points[i].val > 50 && // 一定の強度以上
-            points[i].val >= points[i-1].val && points[i].val >= points[i+1].val &&
-            points[i].val >= points[i-2].val && points[i].val >= points[i+2].val) {
+    for (let i = 2; i < points.length - 2; i++) {
+        if (points[i].val > 40 && 
+            points[i].val >= points[i-1].val && points[i].val >= points[i+1].val) {
             localPeaks.push(points[i]);
         }
     }
+    const topPeaks = localPeaks.sort((a, b) => b.val - a.val).slice(0, 5);
 
-    // 2. 強度順にソートして上位5つを選ぶ
-    const topPeaks = localPeaks
-        .sort((a, b) => b.val - a.val)
-        .slice(0, 5);
-
-    // 3. ピークの描画
-    topPeaks.forEach((p, idx) => {
-        // 赤い丸
+    topPeaks.forEach(p => {
         ctx.fillStyle = '#ff4444';
-        ctx.beginPath();
-        ctx.arc(p.x, p.y, 6, 0, Math.PI * 2);
-        ctx.fill();
-
-        // 周波数ラベル
+        ctx.beginPath(); ctx.arc(p.x, p.y, 6, 0, Math.PI*2); ctx.fill();
         ctx.fillStyle = '#fff';
-        ctx.font = `bold ${window.devicePixelRatio * 14}px sans-serif`;
+        ctx.font = `bold ${14 * window.devicePixelRatio}px sans-serif`;
         ctx.textAlign = 'center';
-        // ラベルが重ならないよう少し上下にずらす工夫
-        const labelY = p.y - 15;
-        ctx.fillText(`${Math.round(p.freq)} Hz`, p.x, labelY);
+        ctx.fillText(`${Math.round(p.freq)}Hz`, p.x, p.y - 20);
     });
 }
 
-toggleBtn.addEventListener('pointerdown', async () => {
-    if (!audioCtx) {
-        await startAudio();
-        toggleBtn.innerText = "一時停止";
-        toggleBtn.classList.add('active');
-    } else if (audioCtx.state === 'running') {
-        await audioCtx.suspend();
-        toggleBtn.innerText = "計測再開";
-        toggleBtn.classList.remove('active');
-        debugInfo.innerText = "停止中";
-    } else {
-        await audioCtx.resume();
-        toggleBtn.innerText = "一時停止";
-        toggleBtn.classList.add('active');
-        debugInfo.innerText = "計測中...";
-    }
-});
+toggleBtn.onclick = async () => {
+    if (!audioCtx) await init();
+    else if (audioCtx.state === 'running') await audioCtx.suspend();
+    else await audioCtx.resume();
+    toggleBtn.innerText = (audioCtx && audioCtx.state === 'running') ? "一時停止" : "計測再開";
+};
 </script>
 </body>
 </html>
