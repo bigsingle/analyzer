@@ -17,8 +17,9 @@
             touch-action: none;
         }
 
-        .controls { width: 90%; background: #2a2a2a; padding: 15px; border-radius: 12px; margin-top: 10px; display: grid; grid-template-columns: 1fr 2fr; gap: 15px; align-items: center; }
-        button { padding: 15px; font-size: 1rem; font-weight: bold; background: var(--accent); border: none; border-radius: 8px; cursor: pointer; }
+        .controls { width: 90%; background: #2a2a2a; padding: 15px; border-radius: 12px; margin-top: 10px; display: grid; grid-template-columns: 100px 1fr; gap: 15px; align-items: center; }
+        button { padding: 15px 5px; font-size: 0.9rem; font-weight: bold; background: var(--accent); border: none; border-radius: 8px; cursor: pointer; color: #000; }
+        button.active { background: #ff4444; color: #fff; }
         .slider-box { display: flex; flex-direction: column; gap: 5px; }
         .help-text { font-size: 0.75rem; color: #888; margin-top: 5px; }
     </style>
@@ -34,10 +35,10 @@
     <canvas id="visualizer"></canvas>
 
     <div class="controls">
-        <button id="toggleBtn">START</button>
+        <button id="toggleBtn">開始</button>
         <div class="slider-box">
             <span style="font-size:0.8rem;">表示帯域幅 (Span): <span id="spanVal">500</span>Hz</span>
-            <input type="range" id="spanSlider" min="10" max="500" step="10" value="500">
+            <input type="range" id="spanSlider" min="10" max="1000" step="10" value="500">
         </div>
     </div>
 
@@ -59,7 +60,7 @@ function resize() {
 window.addEventListener('resize', resize);
 resize();
 
-// スワイプ操作
+// スワイプ操作（パン）
 let isDragging = false;
 let startX = 0;
 let startMinFreq = 0;
@@ -88,7 +89,8 @@ async function init() {
     const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
     const source = audioCtx.createMediaStreamSource(stream);
     analyser = audioCtx.createAnalyser();
-    analyser.fftSize = 16384; // 10Hz帯域を見るために分解能を最大化
+    // 狭い帯域の分解能を保つため高めのfftSizeを維持
+    analyser.fftSize = 16384; 
     source.connect(analyser);
     dataArray = new Uint8Array(analyser.frequencyBinCount);
     draw();
@@ -128,7 +130,7 @@ function draw() {
     }
     ctx.stroke();
 
-    // --- 改良版ピーク検出・重なり防止ロジック ---
+    // ピーク検出
     let localPeaks = [];
     for (let i = 5; i < points.length - 5; i++) {
         if (points[i].val > 30 && 
@@ -139,20 +141,15 @@ function draw() {
     }
     
     const topPeaks = localPeaks.sort((a, b) => b.val - a.val).slice(0, 5);
-
-    // X軸の位置でソート（重なり判定をしやすくするため）
     topPeaks.sort((a, b) => a.x - b.x);
 
-    let lastLabelX = -200; // 前のラベルの終了位置を記録
-    const minSpacing = 80 * window.devicePixelRatio; // ラベル間の最小間隔(px)
+    let lastLabelX = -200; 
+    const minSpacing = 85 * window.devicePixelRatio; // 重なり防止の間隔
 
     topPeaks.forEach(p => {
-        // マーカー（点）は常に表示
         ctx.fillStyle = '#ff4444';
         ctx.beginPath(); ctx.arc(p.x, p.y, 5, 0, Math.PI*2); ctx.fill();
 
-        // 重なり判定
-        // もし前のラベルと近すぎる場合は、描画をスキップするか、上下にずらす
         if (p.x > lastLabelX + minSpacing) {
             ctx.fillStyle = '#fff';
             ctx.font = `bold ${13 * window.devicePixelRatio}px sans-serif`;
@@ -166,13 +163,16 @@ function draw() {
 toggleBtn.onclick = async () => {
     if (!audioCtx) {
         await init();
-        toggleBtn.innerText = "PAUSE";
+        toggleBtn.innerText = "一時停止";
+        toggleBtn.classList.add('active');
     } else if (audioCtx.state === 'running') {
         await audioCtx.suspend();
-        toggleBtn.innerText = "RESUME";
+        toggleBtn.innerText = "測定再開";
+        toggleBtn.classList.remove('active');
     } else {
         await audioCtx.resume();
-        toggleBtn.innerText = "PAUSE";
+        toggleBtn.innerText = "一時停止";
+        toggleBtn.classList.add('active');
     }
 };
 </script>
