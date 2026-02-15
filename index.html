@@ -3,33 +3,37 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Spectrum Analyzer iOS Fix</title>
+    <title>Physics Resonance Analyzer</title>
     <style>
-        body { background: #121212; color: #0f0; font-family: sans-serif; margin: 0; display: flex; flex-direction: column; align-items: center; overflow-x: hidden; }
-        canvas { width: 95%; height: auto; background: #000; border: 1px solid #333; margin-top: 10px; }
-        .controls { width: 95%; margin: 15px 0; display: flex; flex-wrap: wrap; gap: 10px; justify-content: center; }
-        .peak-list { color: #fff; font-size: 0.9rem; margin: 10px 0; text-align: center; min-height: 1.2em; }
-        .peak-list span { color: #0f0; margin: 0 5px; }
-        button { padding: 15px 25px; font-size: 1rem; cursor: pointer; background: #0f0; border: none; font-weight: bold; border-radius: 8px; -webkit-appearance: none; }
-        #debug { color: #ff0; font-size: 0.7rem; width: 90%; word-wrap: break-word; }
-        .slider-group { display: flex; flex-direction: column; color: #ccc; font-size: 0.7rem; align-items: center; }
+        :root { --main-bg: #1a1a1a; --accent: #00ffcc; --peak-color: #ff4444; }
+        body { background: var(--main-bg); color: #fff; font-family: 'Segoe UI', sans-serif; margin: 0; display: flex; flex-direction: column; align-items: center; }
+        .header { margin: 15px; text-align: center; }
+        canvas { width: 95vw; height: 50vh; background: #000; border: 2px solid #333; border-radius: 8px; }
+        .controls { width: 90%; background: #2a2a2a; padding: 20px; border-radius: 12px; margin-top: 15px; display: grid; grid-template-columns: 1fr 2fr; gap: 20px; align-items: center; }
+        button { padding: 15px; font-size: 1.2rem; font-weight: bold; background: var(--accent); border: none; border-radius: 8px; cursor: pointer; color: #000; }
+        button.active { background: #ff5555; color: #fff; }
+        .slider-box { display: flex; flex-direction: column; gap: 10px; }
+        input[type=range] { width: 100%; cursor: pointer; }
+        .label-text { font-size: 0.9rem; color: #ccc; }
+        #debugInfo { color: #f0ad4e; font-size: 0.8rem; margin-top: 5px; }
     </style>
 </head>
 <body>
 
-    <div id="debug">Status: Ready (Tap Start)</div>
-    <canvas id="visualizer" width="600" height="300"></canvas>
-    <div class="peak-list" id="peakDisplay">Peaks will appear here</div>
+    <div class="header">
+        <h2 style="margin:0; color:var(--accent);">気柱共鳴実験用アナライザー</h2>
+        <div id="debugInfo">Startを押してマイクを許可してください</div>
+    </div>
+
+    <canvas id="visualizer"></canvas>
 
     <div class="controls">
-        <button id="toggleBtn">START</button>
-        <div class="slider-group">
-            <label>Min: <span id="minVal">0</span>Hz</label>
-            <input type="range" id="minFreq" min="0" max="5000" value="0">
-        </div>
-        <div class="slider-group">
-            <label>Max: <span id="maxVal">15000</span>Hz</label>
-            <input type="range" id="maxFreq" min="5000" max="22050" value="15000">
+        <button id="toggleBtn">計測開始</button>
+        <div class="slider-box">
+            <div style="display:flex; justify-content:space-between;">
+                <span class="label-text">表示範囲 (0Hz ? <span id="maxFreqVal">8000</span>Hz)</span>
+            </div>
+            <input type="range" id="maxFreqSlider" min="500" max="20000" step="100" value="8000">
         </div>
     </div>
 
@@ -38,82 +42,120 @@ let audioCtx, analyser, dataArray, animationId;
 const canvas = document.getElementById('visualizer');
 const ctx = canvas.getContext('2d');
 const toggleBtn = document.getElementById('toggleBtn');
-const debug = document.getElementById('debug');
+const maxFreqSlider = document.getElementById('maxFreqSlider');
+const maxFreqVal = document.getElementById('maxFreqVal');
+const debugInfo = document.getElementById('debugInfo');
 
-async function init() {
+// 高解像度化
+function resizeCanvas() {
+    canvas.width = canvas.clientWidth * window.devicePixelRatio;
+    canvas.height = canvas.clientHeight * window.devicePixelRatio;
+}
+window.addEventListener('resize', resizeCanvas);
+resizeCanvas();
+
+async function startAudio() {
     try {
-        // iOS対策: AudioContextをタップイベント内で生成
         const AudioContext = window.AudioContext || window.webkitAudioContext;
         audioCtx = new AudioContext();
-
-        // iOS対策: サスペンド状態で始まることが多いため明示的にresume
-        if (audioCtx.state === 'suspended') {
-            await audioCtx.resume();
-        }
-
-        debug.innerText = "Requesting Microphone...";
-        const stream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
         
+        const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
         const source = audioCtx.createMediaStreamSource(stream);
+        
         analyser = audioCtx.createAnalyser();
-        analyser.fftSize = 1024; // iPhoneの負荷を考慮し少し下げる
+        analyser.fftSize = 8192; // 共鳴実験用に周波数分解能を極限まで高める
         source.connect(analyser);
 
         dataArray = new Uint8Array(analyser.frequencyBinCount);
-        debug.innerText = "Running...";
-        render();
+        debugInfo.innerText = "計測中...";
+        draw();
     } catch (err) {
-        debug.innerText = "Error: " + err.name + " - " + err.message;
-        console.error(err);
+        debugInfo.innerText = "エラー: " + err.message;
     }
 }
 
-function render() {
-    animationId = requestAnimationFrame(render);
+function draw() {
+    animationId = requestAnimationFrame(draw);
     analyser.getByteFrequencyData(dataArray);
 
-    const minF = parseInt(document.getElementById('minFreq').value);
-    const maxF = parseInt(document.getElementById('maxFreq').value);
-    document.getElementById('minVal').innerText = minF;
-    document.getElementById('maxVal').innerText = maxF;
+    const maxF = parseInt(maxFreqSlider.value);
+    maxFreqVal.innerText = maxF;
 
-    ctx.fillStyle = 'black';
+    ctx.fillStyle = '#000';
     ctx.fillRect(0, 0, canvas.width, canvas.height);
 
     const binSize = audioCtx.sampleRate / analyser.fftSize;
-    let points = [];
+    const points = [];
 
+    // グラフ描画
     ctx.beginPath();
-    ctx.strokeStyle = '#00ff00';
-    ctx.lineWidth = 2;
+    ctx.strokeStyle = '#00ffcc';
+    ctx.lineWidth = 3;
+    ctx.lineJoin = 'round';
 
     for (let i = 0; i < dataArray.length; i++) {
         const freq = i * binSize;
-        if (freq < minF || freq > maxF) continue;
-        const x = ((freq - minF) / (maxF - minF)) * canvas.width;
+        if (freq > maxF) break;
+
+        const x = (freq / maxF) * canvas.width;
         const y = canvas.height - (dataArray[i] / 255) * canvas.height;
-        if (points.length === 0) ctx.moveTo(x, y);
+
+        if (i === 0) ctx.moveTo(x, y);
         else ctx.lineTo(x, y);
+
         points.push({ x, y, freq, val: dataArray[i] });
     }
     ctx.stroke();
 
-    const peaks = [...points].sort((a, b) => b.val - a.val).slice(0, 5);
-    document.getElementById('peakDisplay').innerHTML = peaks.map(p => `<span>${Math.round(p.freq)}Hz</span>`).join('');
+    // --- ピーク検出ロジック ---
+    // 1. 周辺より高い地点（ローカルマキシマム）を抽出
+    let localPeaks = [];
+    for (let i = 5; i < points.length - 5; i++) {
+        if (points[i].val > 50 && // 一定の強度以上
+            points[i].val >= points[i-1].val && points[i].val >= points[i+1].val &&
+            points[i].val >= points[i-2].val && points[i].val >= points[i+2].val) {
+            localPeaks.push(points[i]);
+        }
+    }
+
+    // 2. 強度順にソートして上位5つを選ぶ
+    const topPeaks = localPeaks
+        .sort((a, b) => b.val - a.val)
+        .slice(0, 5);
+
+    // 3. ピークの描画
+    topPeaks.forEach((p, idx) => {
+        // 赤い丸
+        ctx.fillStyle = '#ff4444';
+        ctx.beginPath();
+        ctx.arc(p.x, p.y, 6, 0, Math.PI * 2);
+        ctx.fill();
+
+        // 周波数ラベル
+        ctx.fillStyle = '#fff';
+        ctx.font = `bold ${window.devicePixelRatio * 14}px sans-serif`;
+        ctx.textAlign = 'center';
+        // ラベルが重ならないよう少し上下にずらす工夫
+        const labelY = p.y - 15;
+        ctx.fillText(`${Math.round(p.freq)} Hz`, p.x, labelY);
+    });
 }
 
-toggleBtn.addEventListener('click', async () => {
+toggleBtn.addEventListener('pointerdown', async () => {
     if (!audioCtx) {
-        await init();
-        toggleBtn.innerText = "PAUSE";
+        await startAudio();
+        toggleBtn.innerText = "一時停止";
+        toggleBtn.classList.add('active');
+    } else if (audioCtx.state === 'running') {
+        await audioCtx.suspend();
+        toggleBtn.innerText = "計測再開";
+        toggleBtn.classList.remove('active');
+        debugInfo.innerText = "停止中";
     } else {
-        if (audioCtx.state === 'running') {
-            await audioCtx.suspend();
-            toggleBtn.innerText = "RESUME";
-        } else {
-            await audioCtx.resume();
-            toggleBtn.innerText = "PAUSE";
-        }
+        await audioCtx.resume();
+        toggleBtn.innerText = "一時停止";
+        toggleBtn.classList.add('active');
+        debugInfo.innerText = "計測中...";
     }
 });
 </script>
