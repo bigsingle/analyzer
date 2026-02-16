@@ -9,23 +9,25 @@
         body { background: #1a1a1a; color: #fff; font-family: sans-serif; margin: 0; display: flex; flex-direction: column; align-items: center; overflow: hidden; touch-action: none; }
         .header { margin: 10px; text-align: center; }
         h1 { font-size: 1.4rem; margin: 5px 0; color: var(--accent); }
-        #modeLabel { color: #fff; font-weight: bold; font-size: 1.1rem; background: #444; padding: 2px 12px; border-radius: 20px; border: 1px solid var(--accent); }
+        #modeLabel { color: #fff; font-weight: bold; font-size: 1.0rem; background: #444; padding: 2px 12px; border-radius: 20px; border: 1px solid var(--accent); }
         
         canvas { 
             width: 95vw; height: 50vh; background: #000; 
-            border: 2px solid #333; border-radius: 8px; cursor: grab;
+            border: 2px solid #333; border-radius: 8px; cursor: move;
             touch-action: none;
         }
 
-        .controls { width: 92%; background: #2a2a2a; padding: 15px; border-radius: 12px; margin-top: 10px; display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
-        .btn-group { display: flex; flex-direction: column; gap: 10px; }
-        button { padding: 12px 5px; font-size: 0.9rem; font-weight: bold; background: var(--accent); border: none; border-radius: 8px; cursor: pointer; color: #000; }
+        .controls { width: 92%; background: #2a2a2a; padding: 12px; border-radius: 12px; margin-top: 8px; display: grid; grid-template-columns: 1fr 1.5fr; gap: 10px; }
+        .btn-group { display: flex; flex-direction: column; gap: 8px; }
+        button { padding: 10px 5px; font-size: 0.85rem; font-weight: bold; background: var(--accent); border: none; border-radius: 8px; cursor: pointer; color: #000; }
         button.active { background: #ff4444; color: #fff; }
         #modeBtn { background: var(--sub-accent); color: #fff; }
 
-        .slider-area { display: flex; flex-direction: column; gap: 5px; background: #333; padding: 10px; border-radius: 8px; }
+        .slider-area { display: flex; flex-direction: column; gap: 8px; background: #333; padding: 8px; border-radius: 8px; }
         .slider-box { display: flex; flex-direction: column; gap: 2px; }
-        .help-text { font-size: 0.7rem; color: #888; margin-top: 5px; grid-column: span 2; text-align: center; }
+        input[type=range] { width: 100%; cursor: pointer; }
+        .help-text { font-size: 0.7rem; color: #aaa; grid-column: span 2; text-align: center; margin-top: 5px; }
+        .stat-label { font-size: 0.75rem; color: var(--accent); }
     </style>
 </head>
 <body>
@@ -40,34 +42,39 @@
     <div class="controls">
         <div class="btn-group">
             <button id="toggleBtn">開始</button>
-            <button id="modeBtn">表示切替 (FFT/波形)</button>
+            <button id="modeBtn">表示切替</button>
         </div>
         
-        <div class="slider-area" id="spectrumControls">
-            <div class="slider-box">
-                <span style="font-size:0.75rem;">表示幅: <span id="spanVal">1000</span>Hz</span>
-                <input type="range" id="spanSlider" min="10" max="1000" step="10" value="500">
+        <div class="slider-area">
+            <div class="slider-box" id="spectrumSliderBox">
+                <span class="stat-label">周波数幅: <span id="spanVal">500</span>Hz</span>
+                <input type="range" id="spanSlider" min="10" max="2000" step="10" value="500">
             </div>
-            <div style="font-size:0.75rem; color:var(--accent);" id="freqRangeText">0 - 500 Hz</div>
+            <div class="slider-box" id="oscilloSliderBox" style="display:none;">
+                <span class="stat-label" style="color:var(--sub-accent);">表示サンプル数: <span id="timeVal">512</span></span>
+                <input type="range" id="timeSlider" min="32" max="2048" step="32" value="512">
+            </div>
+            <div id="verticalScaleText" style="font-size:0.7rem; color:#fff;">縦軸拡大率: 1.0x</div>
         </div>
 
-        <div class="help-text" id="helpMsg">左右スワイプで周波数を移動できます</div>
+        <div class="help-text" id="helpMsg">左右スワイプ: 移動 / 上下スワイプ: 感度調整</div>
     </div>
 
 <script>
 let audioCtx, analyser, dataArray, animationId;
 let minFreq = 0;
 let spanFreq = 500;
-let isOscilloscope = false; // 表示モードフラグ
+let timeSpan = 512;
+let vScale = 1.0; // 縦軸のスケール倍率
+let isOscilloscope = false;
 
 const canvas = document.getElementById('visualizer');
 const ctx = canvas.getContext('2d');
 const toggleBtn = document.getElementById('toggleBtn');
 const modeBtn = document.getElementById('modeBtn');
 const spanSlider = document.getElementById('spanSlider');
-const modeLabel = document.getElementById('modeLabel');
-const specControls = document.getElementById('spectrumControls');
-const helpMsg = document.getElementById('helpMsg');
+const timeSlider = document.getElementById('timeSlider');
+const vScaleText = document.getElementById('verticalScaleText');
 
 function resize() {
     canvas.width = canvas.clientWidth * window.devicePixelRatio;
@@ -76,24 +83,36 @@ function resize() {
 window.addEventListener('resize', resize);
 resize();
 
-// スワイプ操作
+// タッチ・ドラッグ操作（パン & スケーリング）
 let isDragging = false;
-let startX = 0;
-let startMinFreq = 0;
+let startX, startY;
+let startMinFreq, startVScale;
 
 canvas.addEventListener('pointerdown', (e) => {
-    if (isOscilloscope) return;
     isDragging = true;
     startX = e.clientX;
+    startY = e.clientY;
     startMinFreq = minFreq;
+    startVScale = vScale;
 });
 
 window.addEventListener('pointermove', (e) => {
-    if (!isDragging || !audioCtx || isOscilloscope) return;
-    const deltaX = e.clientX - startX;
-    const freqPerPixel = spanFreq / canvas.clientWidth;
-    minFreq = startMinFreq - (deltaX * freqPerPixel);
-    if (minFreq < 0) minFreq = 0;
+    if (!isDragging || !audioCtx) return;
+    
+    // 左右スワイプ: スペアナ時のみ周波数移動
+    if (!isOscilloscope) {
+        const deltaX = e.clientX - startX;
+        const freqPerPixel = spanFreq / canvas.clientWidth;
+        minFreq = startMinFreq - (deltaX * freqPerPixel);
+        if (minFreq < 0) minFreq = 0;
+    }
+
+    // 上下スワイプ: 縦軸の拡大率調整（感度調整）
+    const deltaY = startY - e.clientY; // 上にスワイプで拡大
+    vScale = startVScale * Math.pow(1.005, deltaY); 
+    if (vScale < 0.1) vScale = 0.1;
+    if (vScale > 20.0) vScale = 20.0;
+    vScaleText.innerText = `縦軸拡大率: ${vScale.toFixed(1)}x`;
 });
 
 window.addEventListener('pointerup', () => isDragging = false);
@@ -104,7 +123,7 @@ async function init() {
     const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
     const source = audioCtx.createMediaStreamSource(stream);
     analyser = audioCtx.createAnalyser();
-    analyser.fftSize = 4096; // バランスの良い解像度
+    analyser.fftSize = 4096; 
     source.connect(analyser);
     dataArray = new Uint8Array(analyser.frequencyBinCount);
     draw();
@@ -112,16 +131,13 @@ async function init() {
 
 function draw() {
     animationId = requestAnimationFrame(draw);
-    
     ctx.fillStyle = '#000';
     ctx.fillRect(0, 0, canvas.width, canvas.height);
     
     if (!isOscilloscope) {
-        // --- スペクトラムアナライザー描画 ---
         analyser.getByteFrequencyData(dataArray);
         drawSpectrum();
     } else {
-        // --- オシロスコープ描画 ---
         analyser.getByteTimeDomainData(dataArray);
         drawOscilloscope();
     }
@@ -131,7 +147,6 @@ function drawSpectrum() {
     spanFreq = parseInt(spanSlider.value);
     document.getElementById('spanVal').innerText = spanFreq;
     const maxFreq = minFreq + spanFreq;
-    document.getElementById('freqRangeText').innerText = `${Math.round(minFreq)} - ${Math.round(maxFreq)} Hz`;
 
     const binSize = audioCtx.sampleRate / analyser.fftSize;
     const points = [];
@@ -145,16 +160,19 @@ function drawSpectrum() {
         if (f < minFreq) continue;
         if (f > maxFreq) break;
         const x = ((f - minFreq) / spanFreq) * canvas.width;
-        const y = canvas.height - (dataArray[i] / 255) * canvas.height;
+        // vScaleを適用
+        const normalizedVal = (dataArray[i] / 255) * vScale;
+        const y = canvas.height - Math.min(normalizedVal, 1.0) * canvas.height;
+        
         if (points.length === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
         points.push({ x, y, freq: f, val: dataArray[i] });
     }
     ctx.stroke();
 
-    // ピーク検出
+    // ピーク描画ロジック (省略せず維持)
     let localPeaks = [];
     for (let i = 2; i < points.length - 2; i++) {
-        if (points[i].val > 40 && points[i].val >= points[i-1].val && points[i].val >= points[i+1].val) {
+        if (points[i].val > 20 && points[i].val >= points[i-1].val && points[i].val >= points[i+1].val) {
             localPeaks.push(points[i]);
         }
     }
@@ -166,52 +184,52 @@ function drawSpectrum() {
         ctx.beginPath(); ctx.arc(p.x, p.y, 5, 0, Math.PI*2); ctx.fill();
         if (p.x > lastLabelX + 80) {
             ctx.fillStyle = '#fff';
-            ctx.font = `bold ${13 * window.devicePixelRatio}px sans-serif`;
+            ctx.font = `bold ${12 * window.devicePixelRatio}px sans-serif`;
             ctx.textAlign = 'center';
-            ctx.fillText(`${Math.round(p.freq)}Hz`, p.x, p.y - 20);
+            ctx.fillText(`${Math.round(p.freq)}Hz`, p.x, p.y - 15);
             lastLabelX = p.x;
         }
     });
 }
 
 function drawOscilloscope() {
+    timeSpan = parseInt(timeSlider.value);
+    document.getElementById('timeVal').innerText = timeSpan;
+
     ctx.beginPath();
     ctx.strokeStyle = '#ff00ff';
     ctx.lineWidth = 3;
 
-    const sliceWidth = canvas.width / dataArray.length;
+    // 波形データの中央からのズレにvScaleを適用
+    const sliceWidth = canvas.width / timeSpan;
     let x = 0;
 
-    for (let i = 0; i < dataArray.length; i++) {
-        const v = dataArray[i] / 128.0;
-        const y = v * canvas.height / 2;
+    for (let i = 0; i < timeSpan; i++) {
+        const v = (dataArray[i] - 128) / 128.0; // -1.0 〜 1.0
+        const y = (canvas.height / 2) - (v * vScale * canvas.height / 2);
+        
         if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
         x += sliceWidth;
     }
     ctx.stroke();
 
-    // 中央線（0地点）を表示
-    ctx.setLineDash([5, 5]);
-    ctx.strokeStyle = '#444';
-    ctx.beginPath();
-    ctx.moveTo(0, canvas.height / 2);
-    ctx.lineTo(canvas.width, canvas.height / 2);
-    ctx.stroke();
+    // センターライン
+    ctx.setLineDash([5, 5]); ctx.strokeStyle = '#444';
+    ctx.beginPath(); ctx.moveTo(0, canvas.height/2); ctx.lineTo(canvas.width, canvas.height/2); ctx.stroke();
     ctx.setLineDash([]);
 }
 
 modeBtn.onclick = () => {
     isOscilloscope = !isOscilloscope;
+    document.getElementById('spectrumSliderBox').style.display = isOscilloscope ? "none" : "flex";
+    document.getElementById('oscilloSliderBox').style.display = isOscilloscope ? "flex" : "none";
+    
     if (isOscilloscope) {
         modeLabel.innerText = "波形表示 (Time Domain)";
         modeLabel.style.borderColor = "#ff00ff";
-        specControls.style.opacity = "0.3";
-        helpMsg.innerText = "波の形を直接観察できます";
     } else {
         modeLabel.innerText = "周波数表示 (FFT)";
         modeLabel.style.borderColor = "#00ffcc";
-        specControls.style.opacity = "1.0";
-        helpMsg.innerText = "左右スワイプで周波数を移動できます";
     }
 };
 
