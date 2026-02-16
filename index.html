@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
-    <title>Spectrum Analyzer & Oscilloscope</title>
+    <title>Spectrum Analyzer</title>
     <style>
         :root { --accent: #00ffcc; --sub-accent: #ff00ff; }
         body { background: #1a1a1a; color: #fff; font-family: sans-serif; margin: 0; display: flex; flex-direction: column; align-items: center; overflow: hidden; touch-action: none; }
@@ -13,7 +13,7 @@
         
         canvas { 
             width: 95vw; height: 50vh; background: #000; 
-            border: 2px solid #333; border-radius: 8px; cursor: move;
+            border: 2px solid #333; border-radius: 8px; cursor: crosshair;
             touch-action: none;
         }
 
@@ -26,7 +26,7 @@
         .slider-area { display: flex; flex-direction: column; gap: 8px; background: #333; padding: 8px; border-radius: 8px; }
         .slider-box { display: flex; flex-direction: column; gap: 2px; }
         input[type=range] { width: 100%; cursor: pointer; }
-        .help-text { font-size: 0.7rem; color: #aaa; grid-column: span 2; text-align: center; margin-top: 5px; }
+        .help-text { font-size: 0.7rem; color: #aaa; grid-column: span 2; text-align: center; margin-top: 5px; line-height: 1.4; }
         .stat-label { font-size: 0.75rem; color: var(--accent); }
     </style>
 </head>
@@ -57,15 +57,15 @@
             <div id="verticalScaleText" style="font-size:0.7rem; color:#fff;">縦軸拡大率: 1.0x</div>
         </div>
 
-        <div class="help-text" id="helpMsg">左右スワイプ: 移動 / 上下スワイプ: 感度調整</div>
+        <div class="help-text" id="helpMsg">
+            1本指スワイプ: 周波数を左右に移動<br>
+            2本指スワイプ: 縦軸の感度を上下に調整
+        </div>
     </div>
 
 <script>
 let audioCtx, analyser, dataArray, animationId;
-let minFreq = 0;
-let spanFreq = 500;
-let timeSpan = 512;
-let vScale = 1.0; // 縦軸のスケール倍率
+let minFreq = 0, spanFreq = 500, timeSpan = 512, vScale = 1.0;
 let isOscilloscope = false;
 
 const canvas = document.getElementById('visualizer');
@@ -83,39 +83,70 @@ function resize() {
 window.addEventListener('resize', resize);
 resize();
 
-// タッチ・ドラッグ操作（パン & スケーリング）
-let isDragging = false;
-let startX, startY;
-let startMinFreq, startVScale;
+// --- マルチタッチ操作の制御 ---
+let activePointers = new Map();
+let lastX = 0;
+let lastY = 0;
 
 canvas.addEventListener('pointerdown', (e) => {
-    isDragging = true;
-    startX = e.clientX;
-    startY = e.clientY;
-    startMinFreq = minFreq;
-    startVScale = vScale;
-});
-
-window.addEventListener('pointermove', (e) => {
-    if (!isDragging || !audioCtx) return;
+    canvas.setPointerCapture(e.pointerId);
+    activePointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
     
-    // 左右スワイプ: スペアナ時のみ周波数移動
-    if (!isOscilloscope) {
-        const deltaX = e.clientX - startX;
-        const freqPerPixel = spanFreq / canvas.clientWidth;
-        minFreq = startMinFreq - (deltaX * freqPerPixel);
-        if (minFreq < 0) minFreq = 0;
-    }
-
-    // 上下スワイプ: 縦軸の拡大率調整（感度調整）
-    const deltaY = startY - e.clientY; // 上にスワイプで拡大
-    vScale = startVScale * Math.pow(1.005, deltaY); 
-    if (vScale < 0.1) vScale = 0.1;
-    if (vScale > 20.0) vScale = 20.0;
-    vScaleText.innerText = `縦軸拡大率: ${vScale.toFixed(1)}x`;
+    // 基準位置の更新
+    updatePivot();
 });
 
-window.addEventListener('pointerup', () => isDragging = false);
+canvas.addEventListener('pointermove', (e) => {
+    if (!activePointers.has(e.pointerId) || !audioCtx) return;
+    
+    // 現在の座標を更新
+    activePointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
+
+    if (activePointers.size === 1) {
+        // --- 1本指: 左右パン（スペアナ時のみ） ---
+        if (!isOscilloscope) {
+            const currentX = e.clientX;
+            const deltaX = currentX - lastX;
+            const freqPerPixel = spanFreq / canvas.clientWidth;
+            minFreq -= (deltaX * freqPerPixel);
+            if (minFreq < 0) minFreq = 0;
+        }
+    } else if (activePointers.size === 2) {
+        // --- 2本指: 上下スケーリング（感度） ---
+        const currentY = getAverageY();
+        const deltaY = lastY - currentY; // 上にスワイプで拡大
+        vScale *= Math.pow(1.005, deltaY);
+        if (vScale < 0.1) vScale = 0.1;
+        if (vScale > 20.0) vScale = 20.0;
+        vScaleText.innerText = `縦軸拡大率: ${vScale.toFixed(1)}x`;
+    }
+    
+    updatePivot();
+});
+
+function updatePivot() {
+    if (activePointers.size === 1) {
+        const p = activePointers.values().next().value;
+        lastX = p.x;
+        lastY = p.y;
+    } else if (activePointers.size === 2) {
+        lastY = getAverageY();
+    }
+}
+
+function getAverageY() {
+    let sum = 0;
+    activePointers.forEach(p => sum += p.y);
+    return sum / activePointers.size;
+}
+
+canvas.addEventListener('pointerup', (e) => {
+    activePointers.delete(e.pointerId);
+    if (activePointers.size > 0) updatePivot();
+});
+canvas.addEventListener('pointercancel', (e) => activePointers.delete(e.pointerId));
+
+// --- 以下、音声処理と描画ロジック ---
 
 async function init() {
     const AudioContext = window.AudioContext || window.webkitAudioContext;
@@ -147,29 +178,24 @@ function drawSpectrum() {
     spanFreq = parseInt(spanSlider.value);
     document.getElementById('spanVal').innerText = spanFreq;
     const maxFreq = minFreq + spanFreq;
-
     const binSize = audioCtx.sampleRate / analyser.fftSize;
     const points = [];
 
-    ctx.beginPath();
-    ctx.strokeStyle = '#00ffcc';
-    ctx.lineWidth = 2.5;
+    ctx.beginPath(); ctx.strokeStyle = '#00ffcc'; ctx.lineWidth = 2.5;
 
     for (let i = 0; i < dataArray.length; i++) {
         const f = i * binSize;
         if (f < minFreq) continue;
         if (f > maxFreq) break;
         const x = ((f - minFreq) / spanFreq) * canvas.width;
-        // vScaleを適用
         const normalizedVal = (dataArray[i] / 255) * vScale;
         const y = canvas.height - Math.min(normalizedVal, 1.0) * canvas.height;
-        
         if (points.length === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
         points.push({ x, y, freq: f, val: dataArray[i] });
     }
     ctx.stroke();
 
-    // ピーク描画ロジック (省略せず維持)
+    // ピーク描画
     let localPeaks = [];
     for (let i = 2; i < points.length - 2; i++) {
         if (points[i].val > 20 && points[i].val >= points[i-1].val && points[i].val >= points[i+1].val) {
@@ -180,8 +206,7 @@ function drawSpectrum() {
     topPeaks.sort((a, b) => a.x - b.x);
     let lastLabelX = -200;
     topPeaks.forEach(p => {
-        ctx.fillStyle = '#ff4444';
-        ctx.beginPath(); ctx.arc(p.x, p.y, 5, 0, Math.PI*2); ctx.fill();
+        ctx.fillStyle = '#ff4444'; ctx.beginPath(); ctx.arc(p.x, p.y, 5, 0, Math.PI*2); ctx.fill();
         if (p.x > lastLabelX + 80) {
             ctx.fillStyle = '#fff';
             ctx.font = `bold ${12 * window.devicePixelRatio}px sans-serif`;
@@ -195,25 +220,16 @@ function drawSpectrum() {
 function drawOscilloscope() {
     timeSpan = parseInt(timeSlider.value);
     document.getElementById('timeVal').innerText = timeSpan;
-
-    ctx.beginPath();
-    ctx.strokeStyle = '#ff00ff';
-    ctx.lineWidth = 3;
-
-    // 波形データの中央からのズレにvScaleを適用
+    ctx.beginPath(); ctx.strokeStyle = '#ff00ff'; ctx.lineWidth = 3;
     const sliceWidth = canvas.width / timeSpan;
     let x = 0;
-
     for (let i = 0; i < timeSpan; i++) {
-        const v = (dataArray[i] - 128) / 128.0; // -1.0 〜 1.0
+        const v = (dataArray[i] - 128) / 128.0;
         const y = (canvas.height / 2) - (v * vScale * canvas.height / 2);
-        
         if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
         x += sliceWidth;
     }
     ctx.stroke();
-
-    // センターライン
     ctx.setLineDash([5, 5]); ctx.strokeStyle = '#444';
     ctx.beginPath(); ctx.moveTo(0, canvas.height/2); ctx.lineTo(canvas.width, canvas.height/2); ctx.stroke();
     ctx.setLineDash([]);
@@ -223,30 +239,14 @@ modeBtn.onclick = () => {
     isOscilloscope = !isOscilloscope;
     document.getElementById('spectrumSliderBox').style.display = isOscilloscope ? "none" : "flex";
     document.getElementById('oscilloSliderBox').style.display = isOscilloscope ? "flex" : "none";
-    
-    if (isOscilloscope) {
-        modeLabel.innerText = "波形表示 (Time Domain)";
-        modeLabel.style.borderColor = "#ff00ff";
-    } else {
-        modeLabel.innerText = "周波数表示 (FFT)";
-        modeLabel.style.borderColor = "#00ffcc";
-    }
+    modeLabel.innerText = isOscilloscope ? "波形表示 (Time Domain)" : "周波数表示 (FFT)";
+    modeLabel.style.borderColor = isOscilloscope ? "#ff00ff" : "#00ffcc";
 };
 
 toggleBtn.onclick = async () => {
-    if (!audioCtx) {
-        await init();
-        toggleBtn.innerText = "一時停止";
-        toggleBtn.classList.add('active');
-    } else if (audioCtx.state === 'running') {
-        await audioCtx.suspend();
-        toggleBtn.innerText = "測定再開";
-        toggleBtn.classList.remove('active');
-    } else {
-        await audioCtx.resume();
-        toggleBtn.innerText = "一時停止";
-        toggleBtn.classList.add('active');
-    }
+    if (!audioCtx) { await init(); toggleBtn.innerText = "一時停止"; toggleBtn.classList.add('active'); }
+    else if (audioCtx.state === 'running') { await audioCtx.suspend(); toggleBtn.innerText = "測定再開"; toggleBtn.classList.remove('active'); }
+    else { await audioCtx.resume(); toggleBtn.innerText = "一時停止"; toggleBtn.classList.add('active'); }
 };
 </script>
 </body>
