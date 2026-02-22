@@ -17,9 +17,9 @@
             border: 2px solid #333; border-radius: 8px; cursor: crosshair;
             touch-action: none;
         }
-        .freq-label { position: absolute; bottom: 5px; font-size: 0.8rem; color: #aaa; background: rgba(0,0,0,0.6); padding: 2px 5px; pointer-events: none; }
-        #minFreqLabel { left: 10px; }
-        #maxFreqLabel { right: 10px; }
+        .axis-label { position: absolute; bottom: 5px; font-size: 0.8rem; color: #aaa; background: rgba(0,0,0,0.6); padding: 2px 5px; pointer-events: none; }
+        #leftLabel { left: 10px; }
+        #rightLabel { right: 10px; }
 
         .controls { width: 92%; background: #2a2a2a; padding: 12px; border-radius: 12px; margin-top: 8px; display: grid; grid-template-columns: 1fr 1.5fr; gap: 10px; }
         .btn-group { display: flex; flex-direction: column; gap: 8px; }
@@ -37,14 +37,14 @@
 <body>
 
     <div class="header">
-        <h1>Spectrum Analyzer</h1>
+        <h1 id="title">Spectrum Analyzer</h1>
         <span id="modeLabel">周波数表示 (FFT)</span>
     </div>
 
     <div class="canvas-container">
         <canvas id="visualizer"></canvas>
-        <span id="minFreqLabel" class="freq-label">0 Hz</span>
-        <span id="maxFreqLabel" class="freq-label">500 Hz</span>
+        <span id="leftLabel" class="axis-label">0 Hz</span>
+        <span id="rightLabel" class="axis-label">500 Hz</span>
     </div>
 
     <div class="controls">
@@ -66,13 +66,14 @@
         </div>
 
         <div class="help-text">
-            1本指: 左右移動 (FFTのみ) / 2本指: 感度調整
+            1本指: 左右スライドで移動 / 2本指: 縦軸感度調整
         </div>
     </div>
 
 <script>
 let audioCtx, analyser, dataArray, animationId;
 let minFreq = 0, spanFreq = 500, timeMs = 20, vScale = 1.0;
+let timeOffsetSamples = 0; // 波形表示の開始位置（サンプル数）
 let isOscilloscope = false;
 
 const canvas = document.getElementById('visualizer');
@@ -82,8 +83,8 @@ const modeBtn = document.getElementById('modeBtn');
 const spanSlider = document.getElementById('spanSlider');
 const timeSlider = document.getElementById('timeSlider');
 const vScaleText = document.getElementById('verticalScaleText');
-const minLabel = document.getElementById('minFreqLabel');
-const maxLabel = document.getElementById('maxFreqLabel');
+const leftLabel = document.getElementById('leftLabel');
+const rightLabel = document.getElementById('rightLabel');
 
 function resize() {
     canvas.width = canvas.clientWidth * window.devicePixelRatio;
@@ -92,16 +93,37 @@ function resize() {
 window.addEventListener('resize', resize);
 resize();
 
-// タッチ操作
+// タッチ操作管理
 let activePointers = new Map();
 let lastX = 0, lastY = 0;
-canvas.addEventListener('pointerdown', (e) => { canvas.setPointerCapture(e.pointerId); activePointers.set(e.pointerId, { x: e.clientX, y: e.clientY }); updatePivot(); });
+
+canvas.addEventListener('pointerdown', (e) => {
+    canvas.setPointerCapture(e.pointerId);
+    activePointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
+    updatePivot();
+});
+
 canvas.addEventListener('pointermove', (e) => {
     if (!activePointers.has(e.pointerId) || !audioCtx) return;
     activePointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
-    if (activePointers.size === 1 && !isOscilloscope) {
-        minFreq -= ((e.clientX - lastX) * (spanFreq / canvas.clientWidth));
-        minFreq = Math.max(0, minFreq);
+
+    if (activePointers.size === 1) {
+        const deltaX = e.clientX - lastX;
+        if (!isOscilloscope) {
+            // 周波数モード：周波数パン
+            minFreq -= (deltaX * (spanFreq / canvas.clientWidth));
+            minFreq = Math.max(0, minFreq);
+        } else {
+            // 波形モード：時間パン（過去方向へ移動）
+            // 1ピクセルあたりのサンプル数を計算
+            const samplesInView = (timeMs / 1000) * audioCtx.sampleRate;
+            const samplesPerPixel = samplesInView / canvas.clientWidth;
+            timeOffsetSamples += (deltaX * samplesPerPixel);
+            
+            // オフセット制限：最新(0)からバッファの終わりまで
+            const maxOffset = analyser.fftSize - samplesInView;
+            timeOffsetSamples = Math.max(0, Math.min(maxOffset, timeOffsetSamples));
+        }
     } else if (activePointers.size === 2) {
         vScale *= Math.pow(1.005, lastY - getAverageY());
         vScale = Math.max(0.1, Math.min(20, vScale));
@@ -109,7 +131,13 @@ canvas.addEventListener('pointermove', (e) => {
     }
     updatePivot();
 });
-function updatePivot() { if (activePointers.size === 1) { const p = activePointers.values().next().value; lastX = p.x; lastY = p.y; } else if (activePointers.size === 2) lastY = getAverageY(); }
+
+function updatePivot() {
+    if (activePointers.size === 1) {
+        const p = activePointers.values().next().value;
+        lastX = p.x; lastY = p.y;
+    } else if (activePointers.size === 2) lastY = getAverageY();
+}
 function getAverageY() { let sum = 0; activePointers.forEach(p => sum += p.y); return sum / activePointers.size; }
 canvas.addEventListener('pointerup', (e) => { activePointers.delete(e.pointerId); if (activePointers.size > 0) updatePivot(); });
 
@@ -119,10 +147,10 @@ async function init() {
     const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
     const source = audioCtx.createMediaStreamSource(stream);
     analyser = audioCtx.createAnalyser();
-    // 最大級のバッファ（32768）を確保し、長時間表示と高精度FFTを両立
-    analyser.fftSize = 32768; 
+    analyser.fftSize = 32768; // バッファサイズ最大（過去の波形を長く保持）
     source.connect(analyser);
-    dataArray = new Uint8Array(analyser.frequencyBinCount);
+    dataArray = new Uint8Array(analyser.frequencyBinCount); // FFT用
+    timeDataArray = new Uint8Array(analyser.fftSize); // 時間軸用
     draw();
 }
 
@@ -135,7 +163,7 @@ function draw() {
         analyser.getByteFrequencyData(dataArray);
         drawSpectrum();
     } else {
-        analyser.getByteTimeDomainData(dataArray);
+        analyser.getByteTimeDomainData(timeDataArray);
         drawOscilloscope();
     }
 }
@@ -144,14 +172,11 @@ function drawSpectrum() {
     spanFreq = parseInt(spanSlider.value);
     document.getElementById('spanVal').innerText = spanFreq;
     const maxFreq = minFreq + spanFreq;
-    
-    // 軸ラベルの更新
-    minLabel.innerText = `${Math.round(minFreq)} Hz`;
-    maxLabel.innerText = `${Math.round(maxFreq)} Hz`;
+    leftLabel.innerText = `${Math.round(minFreq)} Hz`;
+    rightLabel.innerText = `${Math.round(maxFreq)} Hz`;
 
     const binSize = audioCtx.sampleRate / analyser.fftSize;
     const points = [];
-
     ctx.beginPath(); ctx.strokeStyle = '#00ffcc'; ctx.lineWidth = 2.5;
 
     for (let i = 0; i < dataArray.length; i++) {
@@ -165,30 +190,21 @@ function drawSpectrum() {
     }
     ctx.stroke();
 
-    // 改良版ピーク検出ロジック
+    // 改良ピーク検出
     let candidates = [];
     for (let i = 2; i < points.length - 2; i++) {
-        // 山であることの判定（しきい値25以上）
-        if (points[i].val > 25 && points[i].val > points[i-1].val && points[i].val > points[i+1].val) {
-            candidates.push(points[i]);
-        }
+        if (points[i].val > 25 && points[i].val > points[i-1].val && points[i].val > points[i+1].val) candidates.push(points[i]);
     }
-
-    // 値の大きい順にソートし、近すぎるピーク（20ピクセル以内 or 10Hz以内）を除外
     let topPeaks = [];
     candidates.sort((a, b) => b.val - a.val);
     for (let cand of candidates) {
         if (topPeaks.length >= 5) break;
-        let isTooClose = topPeaks.some(p => Math.abs(p.x - cand.x) < 40); // 40px以内は同一ピークとみなす
-        if (!isTooClose) topPeaks.push(cand);
+        if (!topPeaks.some(p => Math.abs(p.x - cand.x) < 40)) topPeaks.push(cand);
     }
-
     topPeaks.forEach(p => {
         ctx.fillStyle = '#ff4444'; ctx.beginPath(); ctx.arc(p.x, p.y, 5, 0, Math.PI*2); ctx.fill();
-        ctx.fillStyle = '#fff';
-        ctx.font = `bold ${12 * window.devicePixelRatio}px sans-serif`;
-        ctx.textAlign = 'center';
-        ctx.fillText(`${Math.round(p.freq)}Hz`, p.x, p.y - 15);
+        ctx.fillStyle = '#fff'; ctx.font = `bold ${12 * window.devicePixelRatio}px sans-serif`;
+        ctx.textAlign = 'center'; ctx.fillText(`${Math.round(p.freq)}Hz`, p.x, p.y - 15);
     });
 }
 
@@ -196,21 +212,30 @@ function drawOscilloscope() {
     timeMs = parseInt(timeSlider.value);
     document.getElementById('timeVal').innerText = timeMs;
     
-    // サンプリングレートに基づき、指定msに必要なサンプル数を計算
-    const samplesToShow = Math.floor((timeMs / 1000) * audioCtx.sampleRate);
+    const samplesInView = Math.floor((timeMs / 1000) * audioCtx.sampleRate);
     
+    // ラベル更新：オフセットに基づいた時間を表示（ミリ秒）
+    const offsetMs = (timeOffsetSamples / audioCtx.sampleRate) * 1000;
+    leftLabel.innerText = `-${Math.round(offsetMs + timeMs)} ms`;
+    rightLabel.innerText = `-${Math.round(offsetMs)} ms`;
+
     ctx.beginPath(); ctx.strokeStyle = '#ff00ff'; ctx.lineWidth = 3;
-    const sliceWidth = canvas.width / samplesToShow;
-    let x = 0;
+    const sliceWidth = canvas.width / samplesInView;
     
-    // dataArrayの先頭から必要なサンプル分だけ描画
-    for (let i = 0; i < samplesToShow; i++) {
-        const v = (dataArray[i] - 128) / 128.0;
+    // AnalyserNodeのデータは[0]が最も古く[fftSize-1]が最新。
+    // そのため、右端(最新)からのオフセットで描画位置を決める
+    const startIdx = Math.floor(analyser.fftSize - timeOffsetSamples - samplesInView);
+    const safeStartIdx = Math.max(0, startIdx);
+
+    for (let i = 0; i < samplesInView; i++) {
+        const v = (timeDataArray[safeStartIdx + i] - 128) / 128.0;
+        const x = i * sliceWidth;
         const y = (canvas.height / 2) - (v * vScale * canvas.height / 2);
         if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
-        x += sliceWidth;
     }
     ctx.stroke();
+
+    // センターライン
     ctx.setLineDash([5, 5]); ctx.strokeStyle = '#444';
     ctx.beginPath(); ctx.moveTo(0, canvas.height/2); ctx.lineTo(canvas.width, canvas.height/2); ctx.stroke();
     ctx.setLineDash([]);
@@ -220,7 +245,6 @@ modeBtn.onclick = () => {
     isOscilloscope = !isOscilloscope;
     document.getElementById('spectrumSliderBox').style.display = isOscilloscope ? "none" : "flex";
     document.getElementById('oscilloSliderBox').style.display = isOscilloscope ? "flex" : "none";
-    minLabel.style.display = maxLabel.style.display = isOscilloscope ? "none" : "block";
     modeLabel.innerText = isOscilloscope ? "波形表示 (Time Domain)" : "周波数表示 (FFT)";
     modeLabel.style.borderColor = isOscilloscope ? "#ff00ff" : "#00ffcc";
 };
